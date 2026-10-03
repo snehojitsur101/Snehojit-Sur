@@ -1,0 +1,6 @@
+{
+  "name": "DocuFit AI - Smart A4 Document Scanner & Multi-Image Print Studio",
+  "description": "Upload multiple images and documents, auto-enhance with AI scanning, resize and fit onto A4 pages with customizable grid layouts, real-time print preview, and high-res PDF downloads.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
