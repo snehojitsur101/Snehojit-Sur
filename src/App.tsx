@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Header } from './components/Header';
 import { DocumentTray } from './components/DocumentTray';
 import { FormattingPanel } from './components/FormattingPanel';
@@ -11,15 +11,16 @@ import { OcrModal } from './components/OcrModal';
 import { useUndoRedo, AppSnapshot } from './hooks/useUndoRedo';
 import {
   A4SheetSettings,
+  CropArea,
   DocumentFilter,
   DocumentPage,
   PageLayoutType,
   SampleDocumentPreset,
   ScannedImage,
 } from './types';
-import { fileToDataUrl, loadImage } from './utils/imageProcessor';
+import { autoDetectDocumentEdges, fileToDataUrl, loadImage } from './utils/imageProcessor';
 import { getAutoLayout, getLayoutCapacity } from './utils/layoutEngine';
-import { getSamplePresets } from './utils/sampleData';
+import { Layers, FileText, SlidersHorizontal, Plus } from 'lucide-react';
 
 const DEFAULT_SETTINGS: A4SheetSettings = {
   orientation: 'portrait',
@@ -28,8 +29,8 @@ const DEFAULT_SETTINGS: A4SheetSettings = {
   backgroundColor: '#ffffff',
   borderStyle: 'subtle',
   showHeader: true,
-  headerTitle: 'MONTHLY EXPENSE REIMBURSEMENT REPORT',
-  headerSubtitle: 'Submitted by Financial Department • Total 4 Invoices Attached',
+  headerTitle: 'SCANNED DOCUMENT COLLECTION',
+  headerSubtitle: 'Formatted for Standard A4 Printing & Archival Record',
   showFooter: true,
   footerText: 'Confidential • For Official Document Filing Only',
   showPageNumber: true,
@@ -44,15 +45,18 @@ const INITIAL_PAGES: DocumentPage[] = [
   {
     id: 'page-1',
     pageNumber: 1,
-    layout: 'grid_2x2',
-    slots: [null, null, null, null],
+    layout: 'single_fit',
+    slots: [null],
   },
 ];
+
+type MobileViewTab = 'canvas' | 'tray' | 'settings';
 
 export default function App() {
   // Undo / Redo History State
   const {
     state: historyState,
+    getCurrentState,
     pushState,
     undo,
     redo,
@@ -71,6 +75,7 @@ export default function App() {
   const [zoom, setZoom] = useState<number>(1.0);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [selectedSlotIndex, setSelectedSlotIndex] = useState<number | null>(null);
+  const [mobileTab, setMobileTab] = useState<MobileViewTab>('canvas');
 
   // Modals state
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -88,24 +93,8 @@ export default function App() {
 
   // Helper to commit new state into Undo/Redo history
   const commitState = (updates: Partial<AppSnapshot>) => {
-    pushState({
-      images: updates.images !== undefined ? updates.images : images,
-      pages: updates.pages !== undefined ? updates.pages : pages,
-      settings: updates.settings !== undefined ? updates.settings : settings,
-      currentPageIndex:
-        updates.currentPageIndex !== undefined ? updates.currentPageIndex : currentPageIndex,
-    });
+    pushState(updates);
   };
-
-  // Initialize with Sample Preset on first load
-  useEffect(() => {
-    const presets = getSamplePresets();
-    if (presets && presets.length > 1) {
-      loadPreset(presets[1]); // Default to 4 Invoices preset
-    } else if (presets && presets.length > 0) {
-      loadPreset(presets[0]);
-    }
-  }, []);
 
   // Update Settings helper (with undo tracking)
   const handleUpdateSettings = (newSettings: Partial<A4SheetSettings>) => {
@@ -114,7 +103,7 @@ export default function App() {
     });
   };
 
-  // Load a sample preset
+  // Load a sample preset (only when explicitly triggered by user)
   const loadPreset = (preset: SampleDocumentPreset) => {
     const loadedImages: ScannedImage[] = preset.items.map((item, idx) => {
       const id = `doc-${Date.now()}-${idx}`;
@@ -183,9 +172,13 @@ export default function App() {
         headerSubtitle: preset.headerSubtitle,
       },
     });
+
+    if (window.innerWidth < 768) {
+      setMobileTab('canvas');
+    }
   };
 
-  // Upload user files
+  // Upload user files with immediate auto-crop detection
   const handleFilesSelected = async (files: File[]) => {
     const newDocs: ScannedImage[] = [];
 
@@ -197,7 +190,17 @@ export default function App() {
         const width = imgEl.naturalWidth || 800;
         const height = imgEl.naturalHeight || 600;
 
-        const id = `upload-${Date.now()}-${i}`;
+        // Auto-detect document edges to crop out background/margins immediately
+        let detectedCrop: CropArea = { x: 0.02, y: 0.02, width: 0.96, height: 0.96 };
+        try {
+          detectedCrop = await autoDetectDocumentEdges(dataUrl);
+        } catch {
+          // fallback to 2% safe margin
+        }
+
+        const id = `upload-${Date.now()}-${i}-${Math.random().toString(36).substr(2, 4)}`;
+        const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
+
         const newDoc: ScannedImage = {
           id,
           name: file.name,
@@ -209,6 +212,22 @@ export default function App() {
           aspectRatio: width / height,
           sizeBytes: file.size,
           status: 'idle',
+          scanResult: {
+            documentType: 'Uploaded Document',
+            title: cleanName,
+            confidence: 85,
+            ocrText: `${cleanName.toUpperCase()}\nDocument ready for A4 printing.`,
+            recommendedFilter: 'magic_color',
+            recommendedRotation: 0,
+            qualityAssessment: {
+              sharpness: 90,
+              lighting: 'good',
+              contrast: 'good',
+              notes: 'Auto-cropped document ready for printing.',
+            },
+            keyFields: [{ label: 'File', value: file.name }],
+            summary: `${cleanName} auto-cropped and fitted onto A4.`,
+          },
           settings: {
             brightness: 0,
             contrast: 0,
@@ -216,6 +235,7 @@ export default function App() {
             sharpness: 0,
             filter: settings.autoEnhanceOnUpload ? 'magic_color' : 'original',
             rotation: 0,
+            crop: detectedCrop, // Auto-crop applied directly!
             fitMode: 'contain',
             scale: 1,
             offsetX: 0,
@@ -231,59 +251,48 @@ export default function App() {
 
     if (newDocs.length === 0) return;
 
-    const allNewImages = [...images, ...newDocs];
+    // Read freshest state from stateRef to avoid closure overwrite
+    const current = getCurrentState();
+    const allNewImages = [...current.images, ...newDocs];
 
-    // Auto-fit new documents into slots
-    const updatedPages = [...pages];
-    let pIdx = 0;
-    let slotIdx = 0;
+    // Determine layout for page 1
+    const targetLayout = getAutoLayout(allNewImages.length);
+    const cap = getLayoutCapacity(targetLayout);
 
-    const totalCapacity = updatedPages.reduce((acc, p) => acc + p.slots.length, 0);
-    let finalPages = updatedPages;
-
-    if (allNewImages.length > totalCapacity) {
-      const suggestedLayout = getAutoLayout(allNewImages.length);
-      const cap = getLayoutCapacity(suggestedLayout);
-      const slots: (string | null)[] = [];
-      for (let i = 0; i < cap; i++) {
-        slots.push(allNewImages[i] ? allNewImages[i].id : null);
-      }
-      finalPages = [
-        {
-          id: 'page-1',
-          pageNumber: 1,
-          layout: suggestedLayout,
-          slots,
-        },
-      ];
-    } else {
-      for (const doc of allNewImages) {
-        while (pIdx < updatedPages.length) {
-          const p = updatedPages[pIdx];
-          while (slotIdx < p.slots.length) {
-            if (!p.slots[slotIdx]) {
-              p.slots[slotIdx] = doc.id;
-              break;
-            }
-            slotIdx++;
-          }
-          if (slotIdx < p.slots.length) {
-            break;
-          } else {
-            pIdx++;
-            slotIdx = 0;
-          }
-        }
-      }
-      finalPages = updatedPages;
+    const slots: (string | null)[] = [];
+    for (let i = 0; i < cap; i++) {
+      slots.push(allNewImages[i] ? allNewImages[i].id : null);
     }
 
-    commitState({
+    const updatedPages: DocumentPage[] = [
+      {
+        id: current.pages[0]?.id || 'page-1',
+        pageNumber: 1,
+        layout: targetLayout,
+        slots,
+      },
+    ];
+
+    // Commit state atomically
+    pushState({
       images: allNewImages,
-      pages: finalPages,
+      pages: updatedPages,
+      currentPageIndex: 0,
+      settings: {
+        ...current.settings,
+        headerTitle:
+          allNewImages.length === 1
+            ? allNewImages[0].scanResult?.title || 'SCANNED DOCUMENT'
+            : current.settings.headerTitle,
+      },
     });
 
-    // Run sequential queue scanning for uploaded files to stay within API rate limits
+    // Switch to canvas tab on mobile so user immediately sees their uploaded document
+    if (window.innerWidth < 768) {
+      setMobileTab('canvas');
+    }
+
+    // Run AI scanning sequentially
     scanQueueSequentially(newDocs);
   };
 
@@ -291,20 +300,19 @@ export default function App() {
   const scanQueueSequentially = async (docs: ScannedImage[]) => {
     for (const doc of docs) {
       await scanDocumentWithAi(doc);
-      // Brief pause between documents
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await new Promise((resolve) => setTimeout(resolve, 350));
     }
   };
 
   // Trigger AI Document Scanner via backend API
   const scanDocumentWithAi = async (doc: ScannedImage) => {
-    // Set scanning state
-    const currentImgs = historyState.images;
-    commitState({
-      images: currentImgs.map((item) =>
+    // Set scanning status
+    pushState((prev) => ({
+      ...prev,
+      images: prev.images.map((item) =>
         item.id === doc.id ? { ...item, status: 'scanning' } : item
       ),
-    });
+    }));
 
     try {
       const res = await fetch('/api/scan-document', {
@@ -323,9 +331,18 @@ export default function App() {
         const recommendedFilter = (scanData.recommendedFilter || 'magic_color') as DocumentFilter;
         const recommendedRotation = scanData.recommendedRotation || 0;
 
-        commitState({
-          images: historyState.images.map((item) => {
+        pushState((prev) => ({
+          ...prev,
+          images: prev.images.map((item) => {
             if (item.id === doc.id) {
+              const currentCrop = item.settings.crop;
+              const refinedCrop =
+                scanData.suggestedCrop &&
+                scanData.suggestedCrop.width > 0.3 &&
+                scanData.suggestedCrop.height > 0.3
+                  ? scanData.suggestedCrop
+                  : currentCrop;
+
               return {
                 ...item,
                 status: 'scanned',
@@ -334,52 +351,34 @@ export default function App() {
                   ...item.settings,
                   filter: recommendedFilter,
                   rotation: recommendedRotation,
+                  crop: refinedCrop,
                 },
               };
             }
             return item;
           }),
-        });
+        }));
       }
     } catch (err: any) {
       console.warn('Scan handled with fallback:', err.message);
-      commitState({
-        images: historyState.images.map((item) =>
-          item.id === doc.id
-            ? {
-                ...item,
-                status: 'scanned',
-                scanResult: {
-                  documentType: 'Document',
-                  title: item.name.replace(/\.[^/.]+$/, '').replace(/_/g, ' '),
-                  confidence: 90,
-                  ocrText: 'Scanned document processed for A4 paper fit.',
-                  recommendedFilter: 'magic_color',
-                  recommendedRotation: 0,
-                  qualityAssessment: {
-                    sharpness: 90,
-                    lighting: 'good',
-                    contrast: 'good',
-                    notes: 'Standard scan ready for printing.',
-                  },
-                  keyFields: [{ label: 'File Name', value: item.name }],
-                  summary: 'Scanned document formatted for A4 sheet printing.',
-                },
-              }
-            : item
+      pushState((prev) => ({
+        ...prev,
+        images: prev.images.map((item) =>
+          item.id === doc.id ? { ...item, status: 'scanned' } : item
         ),
-      });
+      }));
     }
   };
 
   // AI Auto-Arrange & Auto-Fit
   const handleAiAutoLayout = async () => {
-    if (images.length === 0) return;
+    const current = getCurrentState();
+    if (current.images.length === 0) return;
     setIsAiLoading(true);
 
     try {
       const payload = {
-        documents: images.map((img) => ({
+        documents: current.images.map((img) => ({
           id: img.id,
           title: img.scanResult?.title || img.name,
           documentType: img.scanResult?.documentType || 'Document',
@@ -397,15 +396,16 @@ export default function App() {
       const json = await res.json();
       const rec = json.data;
 
-      const layoutId = (rec?.recommendedLayoutId || getAutoLayout(images.length)) as PageLayoutType;
+      const layoutId = (rec?.recommendedLayoutId || getAutoLayout(current.images.length)) as PageLayoutType;
       const capacity = getLayoutCapacity(layoutId);
 
       const slots: (string | null)[] = [];
       for (let i = 0; i < capacity; i++) {
-        slots.push(images[i] ? images[i].id : null);
+        slots.push(current.images[i] ? current.images[i].id : null);
       }
 
-      commitState({
+      pushState((prev) => ({
+        ...prev,
         pages: [
           {
             id: 'page-1',
@@ -416,14 +416,14 @@ export default function App() {
         ],
         currentPageIndex: 0,
         settings: {
-          ...settings,
-          headerTitle: rec?.headerTitle || settings.headerTitle,
-          headerSubtitle: rec?.explanation || settings.headerSubtitle,
+          ...prev.settings,
+          headerTitle: rec?.headerTitle || prev.settings.headerTitle,
+          headerSubtitle: rec?.explanation || prev.settings.headerSubtitle,
         },
-      });
+      }));
     } catch (err) {
       console.error('Auto layout failed:', err);
-      const autoL = getAutoLayout(images.length);
+      const autoL = getAutoLayout(current.images.length);
       handleSelectLayout(autoL);
     } finally {
       setIsAiLoading(false);
@@ -433,86 +433,101 @@ export default function App() {
   // Change page layout
   const handleSelectLayout = (layoutId: PageLayoutType) => {
     const capacity = getLayoutCapacity(layoutId);
-    const updated = [...pages];
-    const page = { ...updated[currentPageIndex] };
-    const oldSlots = page.slots;
-    const newSlots: (string | null)[] = [];
+    pushState((prev) => {
+      const updated = [...prev.pages];
+      const page = { ...updated[prev.currentPageIndex] };
+      const oldSlots = page.slots;
+      const newSlots: (string | null)[] = [];
 
-    for (let i = 0; i < capacity; i++) {
-      if (i < oldSlots.length && oldSlots[i]) {
-        newSlots.push(oldSlots[i]);
-      } else if (images[i]) {
-        newSlots.push(images[i].id);
-      } else {
-        newSlots.push(null);
+      for (let i = 0; i < capacity; i++) {
+        if (i < oldSlots.length && oldSlots[i]) {
+          newSlots.push(oldSlots[i]);
+        } else if (prev.images[i]) {
+          newSlots.push(prev.images[i].id);
+        } else {
+          newSlots.push(null);
+        }
       }
-    }
 
-    page.layout = layoutId;
-    page.slots = newSlots;
-    updated[currentPageIndex] = page;
+      page.layout = layoutId;
+      page.slots = newSlots;
+      updated[prev.currentPageIndex] = page;
 
-    commitState({ pages: updated });
+      return {
+        ...prev,
+        pages: updated,
+      };
+    });
   };
 
   // Document item actions
   const handleDeleteImage = (id: string) => {
-    const newImages = images.filter((img) => img.id !== id);
-    const newPages = pages.map((p) => ({
-      ...p,
-      slots: p.slots.map((s) => (s === id ? null : s)),
+    pushState((prev) => ({
+      ...prev,
+      images: prev.images.filter((img) => img.id !== id),
+      pages: prev.pages.map((p) => ({
+        ...p,
+        slots: p.slots.map((s) => (s === id ? null : s)),
+      })),
     }));
-    commitState({
-      images: newImages,
-      pages: newPages,
-    });
   };
 
   const handleRotateImage = (id: string) => {
-    const newImages = images.map((img) =>
-      img.id === id
-        ? {
-            ...img,
-            settings: {
-              ...img.settings,
-              rotation: (img.settings.rotation + 90) % 360,
-            },
-          }
-        : img
-    );
-    commitState({ images: newImages });
+    pushState((prev) => ({
+      ...prev,
+      images: prev.images.map((img) =>
+        img.id === id
+          ? {
+              ...img,
+              settings: {
+                ...img.settings,
+                rotation: (img.settings.rotation + 90) % 360,
+              },
+            }
+          : img
+      ),
+    }));
   };
 
   const handleChangeFilter = (id: string, filter: DocumentFilter) => {
-    const newImages = images.map((img) =>
-      img.id === id
-        ? {
-            ...img,
-            settings: {
-              ...img.settings,
-              filter,
-            },
-          }
-        : img
-    );
-    commitState({ images: newImages });
+    pushState((prev) => ({
+      ...prev,
+      images: prev.images.map((img) =>
+        img.id === id
+          ? {
+              ...img,
+              settings: {
+                ...img.settings,
+                filter,
+              },
+            }
+          : img
+      ),
+    }));
   };
 
   const handleUpdateImage = (id: string, updates: Partial<ScannedImage>) => {
-    const newImages = images.map((img) => (img.id === id ? { ...img, ...updates } : img));
-    commitState({ images: newImages });
+    pushState((prev) => ({
+      ...prev,
+      images: prev.images.map((img) => (img.id === id ? { ...img, ...updates } : img)),
+    }));
   };
 
   // Slot actions
   const handleAssignImageToSlot = (slotIndex: number, imageId: string | null) => {
-    const updated = [...pages];
-    const page = { ...updated[currentPageIndex] };
-    const newSlots = [...page.slots];
-    newSlots[slotIndex] = imageId;
-    page.slots = newSlots;
-    updated[currentPageIndex] = page;
+    pushState((prev) => {
+      const updated = [...prev.pages];
+      const page = { ...updated[prev.currentPageIndex] };
+      const newSlots = [...page.slots];
+      newSlots[slotIndex] = imageId;
+      page.slots = newSlots;
+      updated[prev.currentPageIndex] = page;
 
-    commitState({ pages: updated });
+      return {
+        ...prev,
+        pages: updated,
+      };
+    });
   };
 
   const handleRotateSlotImage = (slotIndex: number) => {
@@ -541,38 +556,44 @@ export default function App() {
       layout: currentPage.layout || 'single_fit',
       slots: new Array(currentPage.slots.length).fill(null),
     };
-    commitState({
-      pages: [...pages, newPage],
-      currentPageIndex: pages.length,
-    });
+    pushState((prev) => ({
+      ...prev,
+      pages: [...prev.pages, newPage],
+      currentPageIndex: prev.pages.length,
+    }));
   };
 
   const handleDuplicatePage = (index: number) => {
-    const srcPage = pages[index];
-    const newPage: DocumentPage = {
-      id: `page-${Date.now()}`,
-      pageNumber: pages.length + 1,
-      layout: srcPage.layout,
-      slots: [...srcPage.slots],
-    };
-    const updated = [...pages];
-    updated.splice(index + 1, 0, newPage);
-    updated.forEach((p, i) => (p.pageNumber = i + 1));
+    pushState((prev) => {
+      const srcPage = prev.pages[index];
+      const newPage: DocumentPage = {
+        id: `page-${Date.now()}`,
+        pageNumber: prev.pages.length + 1,
+        layout: srcPage.layout,
+        slots: [...srcPage.slots],
+      };
+      const updated = [...prev.pages];
+      updated.splice(index + 1, 0, newPage);
+      updated.forEach((p, i) => (p.pageNumber = i + 1));
 
-    commitState({
-      pages: updated,
-      currentPageIndex: index + 1,
+      return {
+        ...prev,
+        pages: updated,
+        currentPageIndex: index + 1,
+      };
     });
   };
 
   const handleDeletePage = (index: number) => {
     if (pages.length <= 1) return;
-    const updated = pages.filter((_, i) => i !== index);
-    updated.forEach((p, i) => (p.pageNumber = i + 1));
-
-    commitState({
-      pages: updated,
-      currentPageIndex: Math.max(0, index - 1),
+    pushState((prev) => {
+      const updated = prev.pages.filter((_, i) => i !== index);
+      updated.forEach((p, i) => (p.pageNumber = i + 1));
+      return {
+        ...prev,
+        pages: updated,
+        currentPageIndex: Math.max(0, index - 1),
+      };
     });
   };
 
@@ -603,27 +624,40 @@ export default function App() {
         setZoom={setZoom}
       />
 
-      {/* Main Studio Workspace: Left Sidebar + Live A4 Canvas + Right Sidebar */}
+      {/* Studio Workspace: Responsive for Mobile & Desktop */}
       <div className="flex-1 flex flex-row overflow-hidden relative">
         {/* Left Documents Tray */}
-        <DocumentTray
-          images={images}
-          selectedImageId={selectedImageId}
-          onSelectImage={(id) => setSelectedImageId(id)}
-          onOpenUpload={() => setIsUploadModalOpen(true)}
-          onOpenPresets={() => setIsUploadModalOpen(true)}
-          onOpenEditor={(img) => {
-            setActiveEditorImage(img);
-            setIsEditorModalOpen(true);
-          }}
-          onDeleteImage={handleDeleteImage}
-          onRotateImage={handleRotateImage}
-          onChangeFilter={handleChangeFilter}
-          onScanWithAi={scanDocumentWithAi}
-        />
+        <div
+          className={`${
+            mobileTab === 'tray' ? 'flex w-full absolute inset-0 z-20' : 'hidden'
+          } md:relative md:flex md:w-80 md:z-0 shrink-0`}
+        >
+          <DocumentTray
+            images={images}
+            selectedImageId={selectedImageId}
+            onSelectImage={(id) => {
+              setSelectedImageId(id);
+              if (window.innerWidth < 768) setMobileTab('canvas');
+            }}
+            onOpenUpload={() => setIsUploadModalOpen(true)}
+            onOpenPresets={() => setIsUploadModalOpen(true)}
+            onOpenEditor={(img) => {
+              setActiveEditorImage(img);
+              setIsEditorModalOpen(true);
+            }}
+            onDeleteImage={handleDeleteImage}
+            onRotateImage={handleRotateImage}
+            onChangeFilter={handleChangeFilter}
+            onScanWithAi={scanDocumentWithAi}
+          />
+        </div>
 
         {/* Center: Live Interactive A4 Sheet Canvas */}
-        <div className="flex-1 flex flex-col h-full overflow-hidden bg-sky-50/30">
+        <div
+          className={`flex-1 flex flex-col h-full overflow-hidden bg-sky-50/30 ${
+            mobileTab !== 'canvas' ? 'hidden md:flex' : 'flex'
+          }`}
+        >
           <A4SheetCanvas
             page={currentPage}
             imagesMap={imagesMap}
@@ -638,27 +672,88 @@ export default function App() {
             onOpenUpload={() => setIsUploadModalOpen(true)}
           />
 
-          {/* Bottom Multi-Page Navigator */}
+          {/* Page Navigator */}
           <PageNavigator
             pages={pages}
             currentPageIndex={currentPageIndex}
-            onSelectPageIndex={(idx) => commitState({ currentPageIndex: idx })}
+            onSelectPageIndex={(idx) => pushState({ currentPageIndex: idx })}
             onAddPage={handleAddPage}
             onDuplicatePage={handleDuplicatePage}
             onDeletePage={handleDeletePage}
           />
         </div>
 
-        {/* Right Formatting & Customization Panel */}
-        <FormattingPanel
-          currentPage={currentPage}
-          settings={settings}
-          onUpdateSettings={handleUpdateSettings}
-          onSelectLayout={handleSelectLayout}
-          onAiAutoLayout={handleAiAutoLayout}
-          isAiLoading={isAiLoading}
-          totalImages={images.length}
-        />
+        {/* Right Formatting Panel */}
+        <div
+          className={`${
+            mobileTab === 'settings' ? 'flex w-full absolute inset-0 z-20' : 'hidden'
+          } md:relative md:flex md:w-80 md:z-0 shrink-0`}
+        >
+          <FormattingPanel
+            currentPage={currentPage}
+            settings={settings}
+            onUpdateSettings={handleUpdateSettings}
+            onSelectLayout={(layout) => {
+              handleSelectLayout(layout);
+              if (window.innerWidth < 768) setMobileTab('canvas');
+            }}
+            onAiAutoLayout={handleAiAutoLayout}
+            isAiLoading={isAiLoading}
+            totalImages={images.length}
+          />
+        </div>
+      </div>
+
+      {/* Mobile Bottom Navigation Bar */}
+      <div className="md:hidden bg-white border-t border-sky-100 flex items-center justify-around py-2 px-3 z-30 shadow-lg">
+        <button
+          onClick={() => setMobileTab('tray')}
+          className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all ${
+            mobileTab === 'tray'
+              ? 'text-sky-600 bg-sky-50 font-bold'
+              : 'text-slate-500 font-medium'
+          }`}
+        >
+          <div className="relative">
+            <Layers className="w-5 h-5" />
+            <span className="absolute -top-1 -right-2 bg-sky-600 text-white text-[9px] font-bold px-1 rounded-full">
+              {images.length}
+            </span>
+          </div>
+          <span className="text-[10px]">Documents</span>
+        </button>
+
+        <button
+          onClick={() => setMobileTab('canvas')}
+          className={`flex flex-col items-center gap-1 py-1 px-4 rounded-xl transition-all ${
+            mobileTab === 'canvas'
+              ? 'text-sky-600 bg-sky-50 font-bold'
+              : 'text-slate-500 font-medium'
+          }`}
+        >
+          <FileText className="w-5 h-5" />
+          <span className="text-[10px]">A4 Canvas</span>
+        </button>
+
+        <button
+          onClick={() => setMobileTab('settings')}
+          className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all ${
+            mobileTab === 'settings'
+              ? 'text-sky-600 bg-sky-50 font-bold'
+              : 'text-slate-500 font-medium'
+          }`}
+        >
+          <SlidersHorizontal className="w-5 h-5" />
+          <span className="text-[10px]">Layout & Style</span>
+        </button>
+
+        <button
+          onClick={() => setIsUploadModalOpen(true)}
+          className="flex flex-col items-center justify-center p-2 rounded-xl bg-sky-600 text-white shadow-md shadow-sky-600/30"
+          title="Upload"
+        >
+          <Plus className="w-5 h-5" />
+        </button>
       </div>
 
       {/* Modals */}

@@ -11,48 +11,74 @@ export interface AppSnapshot {
 export function useUndoRedo(initialState: AppSnapshot) {
   const [history, setHistory] = useState<AppSnapshot[]>([initialState]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
+  const stateRef = useRef<AppSnapshot>(initialState);
   const isUpdatingFromHistoryRef = useRef(false);
 
-  const currentSnapshot = history[currentIndex] || initialState;
+  const currentSnapshot = history[currentIndex] || stateRef.current;
+  stateRef.current = currentSnapshot;
 
-  // Push a new snapshot to history
-  const pushState = useCallback((newSnapshot: AppSnapshot) => {
-    if (isUpdatingFromHistoryRef.current) {
-      isUpdatingFromHistoryRef.current = false;
-      return;
-    }
-
-    setHistory((prevHistory) => {
-      // Truncate any redo history beyond current index
-      const updated = prevHistory.slice(0, currentIndex + 1);
-      // Limit history to 35 steps
-      if (updated.length >= 35) {
-        updated.shift();
+  // Push a new snapshot to history with support for updater functions
+  const pushState = useCallback(
+    (action: Partial<AppSnapshot> | ((prev: AppSnapshot) => AppSnapshot)) => {
+      if (isUpdatingFromHistoryRef.current) {
+        isUpdatingFromHistoryRef.current = false;
+        return;
       }
-      return [...updated, newSnapshot];
-    });
 
-    setCurrentIndex((prev) => {
-      const next = Math.min(prev + 1, 34);
-      return next;
-    });
-  }, [currentIndex]);
+      const currentState = stateRef.current;
+      const nextState: AppSnapshot =
+        typeof action === 'function'
+          ? action(currentState)
+          : {
+              images: action.images !== undefined ? action.images : currentState.images,
+              pages: action.pages !== undefined ? action.pages : currentState.pages,
+              settings: action.settings !== undefined ? action.settings : currentState.settings,
+              currentPageIndex:
+                action.currentPageIndex !== undefined
+                  ? action.currentPageIndex
+                  : currentState.currentPageIndex,
+            };
+
+      stateRef.current = nextState;
+
+      setHistory((prevHistory) => {
+        const updated = prevHistory.slice(0, currentIndex + 1);
+        if (updated.length >= 35) {
+          updated.shift();
+        }
+        return [...updated, nextState];
+      });
+
+      setCurrentIndex((prev) => {
+        return Math.min(prev + 1, 34);
+      });
+    },
+    [currentIndex]
+  );
 
   // Undo
   const undo = useCallback(() => {
     if (currentIndex > 0) {
       isUpdatingFromHistoryRef.current = true;
-      setCurrentIndex((idx) => idx - 1);
+      setCurrentIndex((idx) => {
+        const nextIdx = idx - 1;
+        stateRef.current = history[nextIdx] || stateRef.current;
+        return nextIdx;
+      });
     }
-  }, [currentIndex]);
+  }, [currentIndex, history]);
 
   // Redo
   const redo = useCallback(() => {
     if (currentIndex < history.length - 1) {
       isUpdatingFromHistoryRef.current = true;
-      setCurrentIndex((idx) => idx + 1);
+      setCurrentIndex((idx) => {
+        const nextIdx = idx + 1;
+        stateRef.current = history[nextIdx] || stateRef.current;
+        return nextIdx;
+      });
     }
-  }, [currentIndex, history.length]);
+  }, [currentIndex, history]);
 
   const canUndo = currentIndex > 0;
   const canRedo = currentIndex < history.length - 1;
@@ -60,7 +86,6 @@ export function useUndoRedo(initialState: AppSnapshot) {
   // Global Keyboard Shortcuts (Ctrl+Z, Cmd+Z, Ctrl+Y, Cmd+Shift+Z)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept when typing in input or textarea
       const target = e.target as HTMLElement;
       if (
         target.tagName === 'INPUT' ||
@@ -75,16 +100,13 @@ export function useUndoRedo(initialState: AppSnapshot) {
 
       if (isCmdOrCtrl && e.key.toLowerCase() === 'z') {
         if (e.shiftKey) {
-          // Redo on Mac (Cmd+Shift+Z) or Windows (Ctrl+Shift+Z)
           e.preventDefault();
           redo();
         } else {
-          // Undo
           e.preventDefault();
           undo();
         }
       } else if (isCmdOrCtrl && e.key.toLowerCase() === 'y') {
-        // Redo on Windows (Ctrl+Y)
         e.preventDefault();
         redo();
       }
@@ -96,6 +118,7 @@ export function useUndoRedo(initialState: AppSnapshot) {
 
   return {
     state: currentSnapshot,
+    getCurrentState: () => stateRef.current,
     pushState,
     undo,
     redo,

@@ -43,6 +43,7 @@ function createFallbackScanResult(title?: string) {
     ocrText: `${cleanTitle.toUpperCase()}\nDocument scanned and resized for standard A4 printing.\nClarity enhancement filter applied.`,
     recommendedFilter: 'magic_color',
     recommendedRotation: 0,
+    suggestedCrop: { x: 0.02, y: 0.02, width: 0.96, height: 0.96 },
     qualityAssessment: {
       sharpness: 90,
       lighting: 'good',
@@ -109,6 +110,16 @@ Analyze this uploaded document/photo with high precision.
             ocrText: { type: Type.STRING },
             recommendedFilter: { type: Type.STRING },
             recommendedRotation: { type: Type.INTEGER },
+            suggestedCrop: {
+              type: Type.OBJECT,
+              properties: {
+                x: { type: Type.NUMBER, description: 'Normalized top-left x (0 to 1)' },
+                y: { type: Type.NUMBER, description: 'Normalized top-left y (0 to 1)' },
+                width: { type: Type.NUMBER, description: 'Normalized width (0 to 1)' },
+                height: { type: Type.NUMBER, description: 'Normalized height (0 to 1)' },
+              },
+              required: ['x', 'y', 'width', 'height'],
+            },
             qualityAssessment: {
               type: Type.OBJECT,
               properties: {

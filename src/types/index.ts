@@ -6,6 +6,13 @@ export type DocumentFilter =
   | 'sharp_photo'
   | 'faded_fix';
 
+export interface CropArea {
+  x: number; // Normalized 0 to 1
+  y: number; // Normalized 0 to 1
+  width: number; // Normalized 0 to 1
+  height: number; // Normalized 0 to 1
+}
+
 export interface ImageAdjustments {
   brightness: number; // -100 to 100
   contrast: number; // -100 to 100
@@ -13,6 +20,7 @@ export interface ImageAdjustments {
   sharpness: number; // 0 to 100
   filter: DocumentFilter;
   rotation: number; // 0, 90, 180, 270, etc.
+  crop?: CropArea; // Normalized 0..1 rect
   fitMode: 'contain' | 'cover' | 'fill';
   scale: number; // 0.5 to 2.0 (zoom inside frame)
   offsetX: number; // pan inside frame

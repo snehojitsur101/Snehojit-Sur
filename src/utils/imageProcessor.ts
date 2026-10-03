@@ -1,4 +1,4 @@
-import { DocumentFilter, ImageAdjustments } from '../types';
+import { CropArea, DocumentFilter, ImageAdjustments } from '../types';
 
 /**
  * Loads an image from a URL or base64 into an HTMLImageElement
@@ -10,7 +10,7 @@ export function loadImage(src: string): Promise<HTMLImageElement> {
     }
 
     const img = new Image();
-    
+
     // Only set crossOrigin for remote http(s) URLs, not for data: or blob: URLs
     if (src.startsWith('http://') || src.startsWith('https://')) {
       img.crossOrigin = 'anonymous';
@@ -49,6 +49,106 @@ export function fileToDataUrl(file: File): Promise<string> {
 }
 
 /**
+ * Auto-detects document edges using luminance gradient edge analysis
+ */
+export async function autoDetectDocumentEdges(sourceUrl: string): Promise<CropArea> {
+  try {
+    const img = await loadImage(sourceUrl);
+    const sampleW = 200;
+    const sampleH = Math.round((200 / img.naturalWidth) * img.naturalHeight) || 200;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = sampleW;
+    canvas.height = sampleH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return { x: 0.03, y: 0.03, width: 0.94, height: 0.94 };
+
+    ctx.drawImage(img, 0, 0, sampleW, sampleH);
+    const imgData = ctx.getImageData(0, 0, sampleW, sampleH);
+    const data = imgData.data;
+
+    // Helper to get pixel luminance
+    const getL = (x: number, y: number) => {
+      const idx = (y * sampleW + x) * 4;
+      return 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+    };
+
+    // Calculate boundary luminance gradient changes
+    let minX = 0;
+    let maxX = sampleW - 1;
+    let minY = 0;
+    let maxY = sampleH - 1;
+
+    // Scan Top
+    for (let y = 0; y < Math.floor(sampleH * 0.35); y++) {
+      let variance = 0;
+      for (let x = 10; x < sampleW - 10; x += 5) {
+        variance += Math.abs(getL(x, y) - getL(x, Math.min(sampleH - 1, y + 4)));
+      }
+      if (variance > (sampleW / 5) * 18) {
+        minY = y;
+        break;
+      }
+    }
+
+    // Scan Bottom
+    for (let y = sampleH - 1; y > Math.floor(sampleH * 0.65); y--) {
+      let variance = 0;
+      for (let x = 10; x < sampleW - 10; x += 5) {
+        variance += Math.abs(getL(x, y) - getL(x, Math.max(0, y - 4)));
+      }
+      if (variance > (sampleW / 5) * 18) {
+        maxY = y;
+        break;
+      }
+    }
+
+    // Scan Left
+    for (let x = 0; x < Math.floor(sampleW * 0.35); x++) {
+      let variance = 0;
+      for (let y = 10; y < sampleH - 10; y += 5) {
+        variance += Math.abs(getL(x, y) - getL(Math.min(sampleW - 1, x + 4), y));
+      }
+      if (variance > (sampleH / 5) * 18) {
+        minX = x;
+        break;
+      }
+    }
+
+    // Scan Right
+    for (let x = sampleW - 1; x > Math.floor(sampleW * 0.65); x--) {
+      let variance = 0;
+      for (let y = 10; y < sampleH - 10; y += 5) {
+        variance += Math.abs(getL(x, y) - getL(Math.max(0, x - 4), y));
+      }
+      if (variance > (sampleH / 5) * 18) {
+        maxX = x;
+        break;
+      }
+    }
+
+    // Normalized bounds with safety clamps
+    const normX = Math.max(0, Math.min(0.25, minX / sampleW));
+    const normY = Math.max(0, Math.min(0.25, minY / sampleH));
+    const normMaxX = Math.min(1, Math.max(0.75, (maxX + 1) / sampleW));
+    const normMaxY = Math.min(1, Math.max(0.75, (maxY + 1) / sampleH));
+
+    const width = Math.max(0.4, normMaxX - normX);
+    const height = Math.max(0.4, normMaxY - normY);
+
+    return {
+      x: Number(normX.toFixed(3)),
+      y: Number(normY.toFixed(3)),
+      width: Number(width.toFixed(3)),
+      height: Number(height.toFixed(3)),
+    };
+  } catch (err) {
+    console.warn('Auto edge detection fallback applied:', err);
+    return { x: 0.03, y: 0.03, width: 0.94, height: 0.94 };
+  }
+}
+
+/**
  * Creates a fast thumbnail data URL
  */
 export async function createThumbnail(dataUrl: string, maxDimension = 320): Promise<string> {
@@ -77,7 +177,7 @@ export async function createThumbnail(dataUrl: string, maxDimension = 320): Prom
 }
 
 /**
- * Applies full adjustments & filters to an image and returns processed Data URL
+ * Applies cropping, rotation, adjustments & filters to an image
  */
 export async function processImage(
   sourceUrl: string,
@@ -88,13 +188,27 @@ export async function processImage(
   let origWidth = img.naturalWidth || img.width;
   let origHeight = img.naturalHeight || img.height;
 
+  // 1. Handle Cropping if defined
+  let sourceX = 0;
+  let sourceY = 0;
+  let sourceW = origWidth;
+  let sourceH = origHeight;
+
+  if (settings.crop) {
+    const c = settings.crop;
+    sourceX = Math.max(0, Math.round(c.x * origWidth));
+    sourceY = Math.max(0, Math.round(c.y * origHeight));
+    sourceW = Math.min(origWidth - sourceX, Math.round(c.width * origWidth));
+    sourceH = Math.min(origHeight - sourceY, Math.round(c.height * origHeight));
+  }
+
   // Scale down if requested for performance
   let scaleFactor = 1;
-  if (maxOutputDimension && (origWidth > maxOutputDimension || origHeight > maxOutputDimension)) {
-    scaleFactor = maxOutputDimension / Math.max(origWidth, origHeight);
+  if (maxOutputDimension && (sourceW > maxOutputDimension || sourceH > maxOutputDimension)) {
+    scaleFactor = maxOutputDimension / Math.max(sourceW, sourceH);
   }
-  const targetW = Math.round(origWidth * scaleFactor);
-  const targetH = Math.round(origHeight * scaleFactor);
+  const targetW = Math.max(10, Math.round(sourceW * scaleFactor));
+  const targetH = Math.max(10, Math.round(sourceH * scaleFactor));
 
   const rot = (settings.rotation % 360 + 360) % 360;
   const isRotated90or270 = rot === 90 || rot === 270;
@@ -110,7 +224,7 @@ export async function processImage(
   ctx.save();
   ctx.translate(canvas.width / 2, canvas.height / 2);
   ctx.rotate((rot * Math.PI) / 180);
-  ctx.drawImage(img, -targetW / 2, -targetH / 2, targetW, targetH);
+  ctx.drawImage(img, sourceX, sourceY, sourceW, sourceH, -targetW / 2, -targetH / 2, targetW, targetH);
   ctx.restore();
 
   // If no filters & no adjustments, return fast
@@ -142,7 +256,7 @@ export async function processImage(
   const sFactor = settings.saturation / 100;
   const filter = settings.filter;
 
-  // 1. Pixel processing loop
+  // Pixel processing loop
   for (let i = 0; i < len; i += 4) {
     let r = data[i];
     let g = data[i + 1];
@@ -158,7 +272,7 @@ export async function processImage(
     if (settings.contrast !== 0) {
       r = cFactor * (r - 128) + 128;
       g = cFactor * (g - 128) + 128;
-      b = cFactor * (b - 128) + 128;
+      b = cFactor * (g - 128) + 128;
     }
 
     // Manual Saturation
@@ -186,7 +300,6 @@ export async function processImage(
         g = g * 0.92;
         b = b * 0.92;
       }
-      // slight vibrance
       const avg = (r + g + b) / 3;
       r = r + (r - avg) * 0.2;
       g = g + (g - avg) * 0.2;
@@ -195,7 +308,6 @@ export async function processImage(
       // Clean B&W Flatbed Scanner Filter
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
       let val = gray;
-      // High steep thresholding with gentle anti-aliased knee
       if (gray > 140) {
         val = 255;
       } else if (gray < 75) {
@@ -209,7 +321,6 @@ export async function processImage(
     } else if (filter === 'high_contrast') {
       // High Contrast Greyscale for Faded Receipts
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      // S-curve contrast
       const normalized = gray / 255;
       const curved = Math.pow(normalized, 1.35) * 255;
       const boosted = curved > 180 ? 255 : curved < 70 ? 0 : curved;
@@ -219,7 +330,6 @@ export async function processImage(
     } else if (filter === 'faded_fix') {
       // Fix Faded & Uneven Lighting
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      // Adaptive gamma
       const gamma = 1.6;
       let corrected = 255 * Math.pow(gray / 255, 1 / gamma);
       if (corrected > 210) corrected = 255;
