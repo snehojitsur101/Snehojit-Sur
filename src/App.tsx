@@ -38,7 +38,7 @@ const DEFAULT_SETTINGS: A4SheetSettings = {
   watermarkText: '',
   watermarkOpacity: 12,
   showCutGuides: false,
-  autoEnhanceOnUpload: true,
+  autoEnhanceOnUpload: false, // Default to false: NO CHANGES to original document
 };
 
 const INITIAL_PAGES: DocumentPage[] = [
@@ -190,13 +190,8 @@ export default function App() {
         const width = imgEl.naturalWidth || 800;
         const height = imgEl.naturalHeight || 600;
 
-        // Auto-detect document edges to crop out background/margins immediately
-        let detectedCrop: CropArea = { x: 0.02, y: 0.02, width: 0.96, height: 0.96 };
-        try {
-          detectedCrop = await autoDetectDocumentEdges(dataUrl);
-        } catch {
-          // fallback to 2% safe margin
-        }
+        // Original high-quality preservation: No forced crop cuts, full original frame
+        const originalCrop: CropArea = { x: 0, y: 0, width: 1, height: 1 };
 
         const id = `upload-${Date.now()}-${i}-${Math.random().toString(36).substr(2, 4)}`;
         const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
@@ -215,27 +210,27 @@ export default function App() {
           scanResult: {
             documentType: 'Uploaded Document',
             title: cleanName,
-            confidence: 85,
-            ocrText: `${cleanName.toUpperCase()}\nDocument ready for A4 printing.`,
-            recommendedFilter: 'magic_color',
+            confidence: 95,
+            ocrText: `${cleanName.toUpperCase()}\nOriginal document ready for A4 printing at maximum quality.`,
+            recommendedFilter: 'original',
             recommendedRotation: 0,
             qualityAssessment: {
-              sharpness: 90,
+              sharpness: 98,
               lighting: 'good',
               contrast: 'good',
-              notes: 'Auto-cropped document ready for printing.',
+              notes: 'Original document preserved at 100% original high quality without modifications.',
             },
             keyFields: [{ label: 'File', value: file.name }],
-            summary: `${cleanName} auto-cropped and fitted onto A4.`,
+            summary: `${cleanName} preserved in original high quality and fitted onto A4.`,
           },
           settings: {
             brightness: 0,
             contrast: 0,
             saturation: 100,
             sharpness: 0,
-            filter: settings.autoEnhanceOnUpload ? 'magic_color' : 'original',
+            filter: 'original', // 100% original untouched
             rotation: 0,
-            crop: detectedCrop, // Auto-crop applied directly!
+            crop: originalCrop, // Full frame original document
             fitMode: 'contain',
             scale: 1,
             offsetX: 0,
@@ -335,24 +330,12 @@ export default function App() {
           ...prev,
           images: prev.images.map((item) => {
             if (item.id === doc.id) {
-              const currentCrop = item.settings.crop;
-              const refinedCrop =
-                scanData.suggestedCrop &&
-                scanData.suggestedCrop.width > 0.3 &&
-                scanData.suggestedCrop.height > 0.3
-                  ? scanData.suggestedCrop
-                  : currentCrop;
-
               return {
                 ...item,
                 status: 'scanned',
                 scanResult: scanData,
-                settings: {
-                  ...item.settings,
-                  filter: recommendedFilter,
-                  rotation: recommendedRotation,
-                  crop: refinedCrop,
-                },
+                // Keep settings 100% original and untouched (no automatic color/crop mutation)
+                settings: item.settings,
               };
             }
             return item;

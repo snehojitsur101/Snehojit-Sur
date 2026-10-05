@@ -61,7 +61,7 @@ export async function autoDetectDocumentEdges(sourceUrl: string): Promise<CropAr
     canvas.width = sampleW;
     canvas.height = sampleH;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return { x: 0.03, y: 0.03, width: 0.94, height: 0.94 };
+    if (!ctx) return { x: 0, y: 0, width: 1, height: 1 };
 
     ctx.drawImage(img, 0, 0, sampleW, sampleH);
     const imgData = ctx.getImageData(0, 0, sampleW, sampleH);
@@ -73,7 +73,6 @@ export async function autoDetectDocumentEdges(sourceUrl: string): Promise<CropAr
       return 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
     };
 
-    // Calculate boundary luminance gradient changes
     let minX = 0;
     let maxX = sampleW - 1;
     let minY = 0;
@@ -127,7 +126,6 @@ export async function autoDetectDocumentEdges(sourceUrl: string): Promise<CropAr
       }
     }
 
-    // Normalized bounds with safety clamps
     const normX = Math.max(0, Math.min(0.25, minX / sampleW));
     const normY = Math.max(0, Math.min(0.25, minY / sampleH));
     const normMaxX = Math.min(1, Math.max(0.75, (maxX + 1) / sampleW));
@@ -144,7 +142,7 @@ export async function autoDetectDocumentEdges(sourceUrl: string): Promise<CropAr
     };
   } catch (err) {
     console.warn('Auto edge detection fallback applied:', err);
-    return { x: 0.03, y: 0.03, width: 0.94, height: 0.94 };
+    return { x: 0, y: 0, width: 1, height: 1 };
   }
 }
 
@@ -172,21 +170,37 @@ export async function createThumbnail(dataUrl: string, maxDimension = 320): Prom
   const ctx = canvas.getContext('2d');
   if (!ctx) return dataUrl;
 
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(img, 0, 0, width, height);
-  return canvas.toDataURL('image/jpeg', 0.85);
+  return canvas.toDataURL('image/jpeg', 0.9);
 }
 
 /**
- * Applies cropping, rotation, adjustments & filters to an image
+ * Applies cropping, rotation, adjustments & filters to an image with Ultra-High Resolution preservation
  */
 export async function processImage(
   sourceUrl: string,
   settings: ImageAdjustments,
-  maxOutputDimension?: number
+  maxOutputDimension = 4096
 ): Promise<string> {
+  const isDefaultSettings =
+    settings.filter === 'original' &&
+    (!settings.crop || (settings.crop.x === 0 && settings.crop.y === 0 && settings.crop.width === 1 && settings.crop.height === 1)) &&
+    settings.rotation % 360 === 0 &&
+    settings.brightness === 0 &&
+    settings.contrast === 0 &&
+    settings.saturation === 100 &&
+    settings.sharpness === 0;
+
+  // If no adjustments, crop, or rotation are applied, preserve 100% original lossless source without re-compression
+  if (isDefaultSettings) {
+    return sourceUrl;
+  }
+
   const img = await loadImage(sourceUrl);
-  let origWidth = img.naturalWidth || img.width;
-  let origHeight = img.naturalHeight || img.height;
+  const origWidth = img.naturalWidth || img.width;
+  const origHeight = img.naturalHeight || img.height;
 
   // 1. Handle Cropping if defined
   let sourceX = 0;
@@ -202,7 +216,7 @@ export async function processImage(
     sourceH = Math.min(origHeight - sourceY, Math.round(c.height * origHeight));
   }
 
-  // Scale down if requested for performance
+  // Preserve maximum high quality up to 4K resolution
   let scaleFactor = 1;
   if (maxOutputDimension && (sourceW > maxOutputDimension || sourceH > maxOutputDimension)) {
     scaleFactor = maxOutputDimension / Math.max(sourceW, sourceH);
@@ -220,6 +234,9 @@ export async function processImage(
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return sourceUrl;
 
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
   // Handle Rotation
   ctx.save();
   ctx.translate(canvas.width / 2, canvas.height / 2);
@@ -227,16 +244,16 @@ export async function processImage(
   ctx.drawImage(img, sourceX, sourceY, sourceW, sourceH, -targetW / 2, -targetH / 2, targetW, targetH);
   ctx.restore();
 
-  // If no filters & no adjustments, return fast
-  const isDefaultSettings =
+  // If filter is original and only rotation/crop was done, export at maximum JPEG quality 0.98
+  const isFilterOriginal =
     settings.filter === 'original' &&
     settings.brightness === 0 &&
     settings.contrast === 0 &&
     settings.saturation === 100 &&
     settings.sharpness === 0;
 
-  if (isDefaultSettings) {
-    return canvas.toDataURL('image/jpeg', 0.95);
+  if (isFilterOriginal) {
+    return canvas.toDataURL('image/jpeg', 0.98);
   }
 
   // Get pixel buffer for pixel-level enhancement
@@ -245,13 +262,13 @@ export async function processImage(
     imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   } catch (err) {
     console.warn('Canvas pixel manipulation bypassed due to security context:', err);
-    return canvas.toDataURL('image/jpeg', 0.95);
+    return canvas.toDataURL('image/jpeg', 0.98);
   }
 
   const data = imageData.data;
   const len = data.length;
 
-  const bFactor = settings.brightness * 2.55; // -255 to +255
+  const bFactor = settings.brightness * 2.55;
   const cFactor = (259 * (settings.contrast + 255)) / (255 * (259 - settings.contrast));
   const sFactor = settings.saturation / 100;
   const filter = settings.filter;
@@ -285,17 +302,13 @@ export async function processImage(
 
     // Specific Document Scanner Presets
     if (filter === 'magic_color') {
-      // Magic Color Document Filter:
-      // Whiten grayish background shadows while intensifying ink/text
       const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
       if (luminance > 165) {
-        // Highlight background boost to clean white
         const boost = (luminance - 165) / 90;
         r = r + (255 - r) * boost * 0.85;
         g = g + (255 - g) * boost * 0.85;
         b = b + (255 - b) * boost * 0.85;
       } else {
-        // Darken text/ink slightly for crisp contrast
         r = r * 0.92;
         g = g * 0.92;
         b = b * 0.92;
@@ -305,7 +318,6 @@ export async function processImage(
       g = g + (g - avg) * 0.2;
       b = b + (b - avg) * 0.2;
     } else if (filter === 'bw_clean') {
-      // Clean B&W Flatbed Scanner Filter
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
       let val = gray;
       if (gray > 140) {
@@ -319,7 +331,6 @@ export async function processImage(
       g = val;
       b = val;
     } else if (filter === 'high_contrast') {
-      // High Contrast Greyscale for Faded Receipts
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
       const normalized = gray / 255;
       const curved = Math.pow(normalized, 1.35) * 255;
@@ -328,7 +339,6 @@ export async function processImage(
       g = boosted;
       b = boosted;
     } else if (filter === 'faded_fix') {
-      // Fix Faded & Uneven Lighting
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
       const gamma = 1.6;
       let corrected = 255 * Math.pow(gray / 255, 1 / gamma);
@@ -338,20 +348,19 @@ export async function processImage(
       b = corrected;
     }
 
-    // Clamp 0..255
     data[i] = Math.max(0, Math.min(255, r));
     data[i + 1] = Math.max(0, Math.min(255, g));
     data[i + 2] = Math.max(0, Math.min(255, b));
   }
 
-  // 2. Sharpness Filter (3x3 Convolution) if sharpness > 0 or sharp_photo
+  // Sharpness Filter (3x3 Convolution) if sharpness > 0 or sharp_photo
   const sharpnessVal = filter === 'sharp_photo' ? Math.max(settings.sharpness, 45) : settings.sharpness;
   if (sharpnessVal > 0) {
     applySharpness(imageData, sharpnessVal / 100);
   }
 
   ctx.putImageData(imageData, 0, 0);
-  return canvas.toDataURL('image/jpeg', 0.95);
+  return canvas.toDataURL('image/jpeg', 0.98);
 }
 
 /**
@@ -363,7 +372,6 @@ function applySharpness(imageData: ImageData, amount: number) {
   const src = new Uint8ClampedArray(imageData.data);
   const dst = imageData.data;
 
-  // Kernel: [ 0, -k, 0, -k, 1+4k, -k, 0, -k, 0 ]
   const k = amount * 0.75;
   const center = 1 + 4 * k;
 

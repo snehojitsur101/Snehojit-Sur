@@ -71,13 +71,31 @@ export const ImageEditorModal: React.FC<ImageEditorModalProps> = ({
     });
   };
 
+  const handleResetToOriginal = () => {
+    onUpdateImage(image.id, {
+      settings: {
+        brightness: 0,
+        contrast: 0,
+        saturation: 100,
+        sharpness: 0,
+        filter: 'original',
+        rotation: 0,
+        crop: { x: 0, y: 0, width: 1, height: 1 },
+        fitMode: 'contain',
+        scale: 1,
+        offsetX: 0,
+        offsetY: 0,
+      },
+    });
+  };
+
   const handleApplyCrop = (crop: CropArea) => {
     handleUpdateAdjustments({ crop });
     setActiveTab('adjustments');
   };
 
   const handleResetCrop = () => {
-    handleUpdateAdjustments({ crop: undefined });
+    handleUpdateAdjustments({ crop: { x: 0, y: 0, width: 1, height: 1 } });
   };
 
   const handleCopyOcr = async () => {
@@ -353,7 +371,13 @@ export const ImageEditorModal: React.FC<ImageEditorModalProps> = ({
                   </div>
                 </div>
 
-                <div className="pt-2">
+                <div className="pt-2 space-y-2">
+                  <button
+                    onClick={handleResetToOriginal}
+                    className="w-full py-2 px-3 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-800 font-bold text-xs border border-sky-200 transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <span>↺ Reset to Original (100% High Quality)</span>
+                  </button>
                   <button
                     onClick={onClose}
                     className="w-full py-2.5 px-4 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs transition-colors shadow-md shadow-sky-600/20"

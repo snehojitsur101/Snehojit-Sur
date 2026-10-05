@@ -163,7 +163,7 @@ export const DocumentTray: React.FC<DocumentTrayProps> = ({
                         }}
                         className="bg-white text-slate-800 text-[11px] font-medium rounded-lg px-2 py-0.5 border border-sky-200 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer shadow-2xs"
                       >
-                        <option value="original">Original</option>
+                        <option value="original">Original (High Quality)</option>
                         <option value="magic_color">✨ Magic Color</option>
                         <option value="bw_clean">📄 B&W Clean Scan</option>
                         <option value="high_contrast">⚡ High Contrast</option>

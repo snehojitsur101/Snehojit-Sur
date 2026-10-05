@@ -223,8 +223,11 @@ export async function renderA4PageToCanvas(
   const canvas = document.createElement('canvas');
   canvas.width = canvasW;
   canvas.height = canvasH;
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) return canvas;
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
 
   // Background
   ctx.fillStyle = settings.backgroundColor || '#ffffff';
@@ -340,10 +343,10 @@ export async function renderA4PageToCanvas(
     if (!doc) continue;
 
     try {
-      // Render processed image data url or fallback to original
-      let processedUrl = doc.processedUrl || doc.originalUrl;
+      // Render processed image data url or fallback to original lossless
+      let processedUrl = doc.originalUrl;
       try {
-        processedUrl = await processImage(doc.originalUrl, doc.settings, 1800);
+        processedUrl = await processImage(doc.originalUrl, doc.settings, 4096);
       } catch (e) {
         console.warn('Filter processing fallback to original:', e);
         processedUrl = doc.originalUrl;

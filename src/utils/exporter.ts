@@ -40,14 +40,14 @@ export async function exportToPdf(
     }
 
     const page = pages[i];
-    // High DPI canvas rendering (1200 x 1700 approx for crisp 300DPI)
-    const pageCanvas = await renderA4PageToCanvas(page, images, settings, 2.0);
-    const imgData = pageCanvas.toDataURL('image/jpeg', 0.95);
+    // True 300 DPI High-Resolution Canvas Rendering (approx 2382 x 3369 px for standard A4)
+    const pageCanvas = await renderA4PageToCanvas(page, images, settings, 3.0);
+    const imgData = pageCanvas.toDataURL('image/jpeg', 0.98);
 
     const pdfWidth = isLandscape ? 297 : 210;
     const pdfHeight = isLandscape ? 210 : 297;
 
-    pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight, undefined, 'FAST');
+    pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight, undefined, 'SLOW');
   }
 
   pdf.save(fileName);
@@ -55,7 +55,7 @@ export async function exportToPdf(
 }
 
 /**
- * Downloads a specific page as high-res PNG / JPEG
+ * Downloads a specific page as ultra high-res PNG / JPEG
  */
 export async function exportPageAsImage(
   page: DocumentPage,
@@ -64,9 +64,9 @@ export async function exportPageAsImage(
   format: 'png' | 'jpeg' = 'png',
   fileName?: string
 ): Promise<void> {
-  const canvas = await renderA4PageToCanvas(page, images, settings, 2.5);
+  const canvas = await renderA4PageToCanvas(page, images, settings, 3.0);
   const mime = format === 'png' ? 'image/png' : 'image/jpeg';
-  const dataUrl = canvas.toDataURL(mime, 0.95);
+  const dataUrl = canvas.toDataURL(mime, format === 'png' ? 1.0 : 0.98);
 
   const name = fileName || `A4_Page_${page.pageNumber}.${format === 'png' ? 'png' : 'jpg'}`;
   const link = document.createElement('a');
